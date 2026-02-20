@@ -50,6 +50,23 @@ The entire pipeline can be executed from the `src` directory using the `main.py`
 python src/main.py
 ```
 
+### Running Experiments
+
+You can customize the data preparation process using command-line arguments:
+
+- **--include-reporting-flags**: Include reporting flag columns (e.g., `F_CIGS_0`, `F_RF_GDIAB`) in the dataset. By default, these are excluded.
+- **--feature-set**: Choose which set of features to use. Options are:
+  - `numeric`: Use numeric columns only (e.g., `CIG_0`, `MAGER`, `BMI`).
+  - `recode_small`: Use "small" (less granular) recode columns (e.g., `MAGER9`, `MRACE6`) and standard recodes.
+  - `recode_large`: Use "large" (more granular) recode columns (e.g., `MAGER14`, `MRACE15`) and standard recodes.
+  - `both_small`: Use numeric columns + small recodes.
+  - `both_large`: Use numeric columns + large recodes.
+
+Example:
+```bash
+python src/main.py --include-reporting-flags --feature-set both_large
+```
+
 This will sequentially run:
 1. **Feature Engineering**: `src/feature_engineering/build_features.py`
 2. **Model Training**: `src/models/train_model.py`
@@ -63,19 +80,21 @@ This will sequentially run:
 - Saves the resulting dataset to `data/processed/`.
 
 ### Model Training (`train_model.py`)
-- Loads processed data.
-- Trains the prediction model (e.g., Random Forest, XGBoost).
-- Evaluates performance and saves the model artifact to the `models/` directory.
+- Loads processed data from `data/processed/final_dataset.csv`.
+- Trains an **XGBoost Classifier** using `GridSearchCV` for hyperparameter optimization.
+- One-hot encodes categorical variables automatically.
+- Evaluates performance (Accuracy, Classification Report) on a test set (20% split).
+- Saves the best model artifact to `models/xgboost_model.joblib`.
 
 ### Prediction (`predict_model.py`)
 - Loads a trained model.
 - Generates predictions on new data.
 
 ## Placeholders & Future Work
-- [ ] Implement specific cleaning logic in `build_features.py`.
-- [ ] Define the model architecture in `train_model.py`.
+- [x] Implement specific cleaning logic in `build_features.py`.
+- [x] Define the model architecture in `train_model.py`.
 - [ ] Add unit tests for data transformations.
-- [ ] Integrate hyperparameter tuning.
+- [x] Integrate hyperparameter tuning.
 
 ## License
 [Insert License Information]
