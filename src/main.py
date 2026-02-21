@@ -19,7 +19,8 @@ def main():
                         default="both_large", 
                         help="Which set of features to use.")
     
-    # Arguments for other steps could be added here
+    # Arguments for other steps
+    parser.add_argument("--skip-features", action="store_true", help="Skip feature engineering step.")
     parser.add_argument("--skip-train", action="store_true", help="Skip model training step.")
     parser.add_argument("--skip-predict", action="store_true", help="Skip prediction step.")
 
@@ -28,14 +29,11 @@ def main():
     logger.info("Starting the data pipeline...")
 
     # Step 1: Feature Engineering
-    logger.info("Step 1: Building features...")
-    # Pass the relevant args to build_features
-    # We can create a namespace or just pass the values if we modified build_features to accept them directly.
-    # Currently build_features.main accepts an args object. We can pass our args object directly 
-    # as it contains the necessary attributes.
-    
-    # We need to make sure build_features.main uses the args passed to it.
-    build_features.main(args)
+    if not args.skip_features:
+        logger.info("Step 1: Building features...")
+        build_features.main(args)
+    else:
+        logger.info("Skipping feature engineering.")
 
     # Step 2: Train Model
     if not args.skip_train:

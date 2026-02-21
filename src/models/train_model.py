@@ -8,8 +8,6 @@ from datetime import datetime
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix, precision_recall_fscore_support
 from xgboost import XGBClassifier
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -56,41 +54,40 @@ def train_xgboost_model(args, data_path="data/processed/final_dataset.csv", mode
     logger.info("Splitting data into train and test sets (80/20)...")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    # Calculate class weight (still useful to log, or use in conjunction with SMOTE)
-    neg_count = np.sum(y_train == 0)
-    pos_count = np.sum(y_train == 1)
-    scale_pos_weight = neg_count / pos_count if pos_count > 0 else 1.0
+    # Undersampling majority class (0) to 50/50 balance
+    logger.info("Undersampling majority class to 50/50 balance...")
+    X_train_0 = X_train[y_train == 0]
+    X_train_1 = X_train[y_train == 1]
     
-    logger.info(f"Class Balance - Negative (0): {neg_count}, Positive (1): {pos_count}")
-    logger.info(f"Calculated scale_pos_weight: {scale_pos_weight:.2f}")
+    n_minority = len(X_train_1)
+    X_train_0_sampled = X_train_0.sample(n=n_minority, random_state=42)
+    y_train_0_sampled = y_train.loc[X_train_0_sampled.index]
+    y_train_1 = y_train[y_train == 1]
+    
+    X_train = pd.concat([X_train_0_sampled, X_train_1])
+    y_train = pd.concat([y_train_0_sampled, y_train_1])
+    
+    # Shuffle the training set
+    X_train = X_train.sample(frac=1, random_state=42)
+    y_train = y_train.loc[X_train.index]
+    
+    logger.info(f"Balanced Class Balance - Negative (0): {len(y_train[y_train==0])}, Positive (1): {len(y_train[y_train==1])}")
 
     # Initialize XGBoost Classifier
-    xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+    xgb = XGBClassifier(use_label_encoder=False, eval_metric='aucpr', random_state=42)
     
-    # Initialize SMOTE
-    smote = SMOTE(random_state=42)
-
-    # Create Pipeline
-    # SMOTE happens only during training in each fold of CV
-    pipeline = Pipeline([
-        ('smote', smote),
-        ('xgb', xgb)
-    ])
-
     # Grid Search
-    # Note: We can test scale_pos_weight=1 (since SMOTE balances classes) vs calculated weight
     param_grid = {
-        'xgb__n_estimators': [100],
-        'xgb__max_depth': [3, 5],
-        'xgb__learning_rate': [0.1],
-        'xgb__scale_pos_weight': [1, scale_pos_weight] 
+        'n_estimators': [100, 200],
+        'max_depth': [5, 7, 10],
+        'learning_rate': [0.1, 0.05]
     }
 
-    logger.info("Starting GridSearchCV with SMOTE pipeline and F1 scoring...")
+    logger.info("Starting GridSearchCV with balanced data and Average Precision scoring...")
     grid_search = GridSearchCV(
-        estimator=pipeline,
+        estimator=xgb,
         param_grid=param_grid,
-        scoring='f1',  # Optimizing for F1 score of the positive class
+        scoring='average_precision',  # Optimizing for Area Under Precision-Recall Curve
         cv=3,
         verbose=1,
         n_jobs=-1
@@ -98,13 +95,13 @@ def train_xgboost_model(args, data_path="data/processed/final_dataset.csv", mode
 
     grid_search.fit(X_train, y_train)
 
-    # Best Model (Pipeline)
-    best_pipeline = grid_search.best_estimator_
+    # Best Model
+    best_xgb_model = grid_search.best_estimator_
     logger.info(f"Best Parameters: {grid_search.best_params_}")
 
     # Evaluation
     logger.info("Evaluating model on test set...")
-    y_pred = best_pipeline.predict(X_test)
+    y_pred = best_xgb_model.predict(X_test)
     
     accuracy = accuracy_score(y_test, y_pred)
     precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average='weighted')
@@ -118,15 +115,13 @@ def train_xgboost_model(args, data_path="data/processed/final_dataset.csv", mode
     # Save Model
     logger.info(f"Saving model to {model_path}...")
     os.makedirs(models_dir, exist_ok=True)
-    joblib.dump(best_pipeline, model_path)
+    joblib.dump(best_xgb_model, model_path)
     logger.info("Model saved successfully.")
 
     # --- Generate Summary Report ---
     logger.info("Generating summary report...")
     
-    # Feature Importance (Extract from the XGBoost step in the pipeline)
-    # best_pipeline.named_steps['xgb'] gives us the trained XGBClassifier
-    best_xgb_model = best_pipeline.named_steps['xgb']
+    # Feature Importance
     importances = best_xgb_model.feature_importances_
     
     feat_imp_df = pd.DataFrame({"Feature": feature_names, "Importance": importances})

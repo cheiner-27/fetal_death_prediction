@@ -137,41 +137,44 @@ def load_data(data_path):
 def clean_data(df, include_reporting_flags=True):
     logger.info("Cleaning data...")
     
-    # Filter for Gestational Age >= 20 weeks
+    # 1. Fill reporting flags with 0s (as they are boolean)
+    for col in REPORTING_FLAGS:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+    
+    # 2. Drop rows that are almost completely blank (threshold based on full column set)
+    initial_count = len(df)
+    df.dropna(thresh=36, inplace=True)
+    logger.info(f"Dropped {initial_count - len(df)} nearly blank rows (threshold=36).")
+
+    # 3. Filter for Gestational Age >= 20 weeks
     if "COMBGEST" in df.columns:
-        initial_count = len(df)
         # Ensure COMBGEST is numeric, coercing errors to NaN
         df["COMBGEST"] = pd.to_numeric(df["COMBGEST"], errors="coerce")
         # Keep rows with GA >= 20
-        df = df[df["COMBGEST"] >= 20]
-        dropped_count = initial_count - len(df)
-        logger.info(f"Dropped {dropped_count} rows with Gestational Age < 20 weeks (or NaN).")
+        df = df[df["COMBGEST"] >= 20].copy()
+        logger.info(f"Filtered for Gestational Age >= 20. Current rows: {len(df)}")
     else:
         logger.warning("COMBGEST column not found; cannot filter by gestational age.")
     
-    # Drop data leak columns
+    # 4. Drop data leak columns
     existing_leak_cols = [c for c in DATA_LEAK_COLUMNS if c in df.columns]
     if existing_leak_cols:
         df.drop(columns=existing_leak_cols, inplace=True)
         logger.info(f"Dropped {len(existing_leak_cols)} data leak columns.")
 
-    # Handle Reporting Flags
-    if include_reporting_flags:
-        for col in REPORTING_FLAGS:
-            if col in df.columns:
-                df[col] = df[col].fillna(0)
-    else:
+    # 5. Handle Reporting Flags (Keep or Drop)
+    if not include_reporting_flags:
         # If not including, drop them
         existing_flags = [c for c in REPORTING_FLAGS if c in df.columns]
         if existing_flags:
             df.drop(columns=existing_flags, inplace=True)
             logger.info(f"Dropped {len(existing_flags)} reporting flags (experiment config).")
 
-    # Drop blank rows
+    # 6. Final drop for any remaining rows with nulls
     initial_len = len(df)
-    df.dropna(thresh=36, inplace=True)
     df.dropna(how='any', inplace=True)
-    logger.info(f"Dropped rows with nulls. Rows reduced from {initial_len} to {len(df)}.")
+    logger.info(f"Final null drop. Rows reduced from {initial_len} to {len(df)}.")
 
     return df
 
