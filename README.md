@@ -2,6 +2,11 @@
 
 This project aims to predict fetal death using NVSS (National Vital Statistics System) data. It provides a structured pipeline for data processing, feature engineering, and model training.
 
+## Project Status & Recent Updates (March 2026)
+- **Data Investigation**: Investigated the `DPLURAL` column across 2016-2023 datasets. Confirmed that the value `9` (representing "Unknown" or "Not Stated") is present in Fetal records but not in Natal samples.
+- **Model Expansion**: Added support for **Explainable Boosting Machines (EBM)** and **AutoGluon** (AutoML) alongside XGBoost and CatBoost.
+- **Refined Feature Engineering**: Improved imputation logic, including stratified medians and stochastic imputation for sensitive fields like cigarette use and maternal education.
+
 ## Project Structure
 
 ```text
@@ -17,7 +22,10 @@ fetal_death_prediction/
 │   ├── feature_engineering/# Feature engineering and cleaning
 │   │   └── build_features.py
 │   └── models/             # Model training and prediction
-│       ├── train_model.py
+│       ├── train_xgboost.py
+│       ├── train_catboost.py
+│       ├── train_autogluon.py
+│       ├── train_ebm.py
 │       └── predict_model.py
 ├── requirements.txt        # Project dependencies
 └── README.md               # Project documentation
@@ -61,40 +69,24 @@ You can customize the data preparation process using command-line arguments:
   - `recode_large`: Use "large" (more granular) recode columns (e.g., `MAGER14`, `MRACE15`) and standard recodes.
   - `both_small`: Use numeric columns + small recodes.
   - `both_large`: Use numeric columns + large recodes.
+- **--model**: Specify the model to train. Options: `xgboost` (default), `catboost`, `ebm`, `autogluon`.
 
 Example:
 ```bash
-python src/main.py --include-reporting-flags --feature-set both_large
+python src/main.py --include-reporting-flags --feature-set both_large --model autogluon
 ```
-
-This will sequentially run:
-1. **Feature Engineering**: `src/feature_engineering/build_features.py`
-2. **Model Training**: `src/models/train_model.py`
-3. **Prediction**: `src/models/predict_model.py`
 
 ## Key Components
 
 ### Feature Engineering (`build_features.py`)
 - Responsible for cleaning raw data from `data/csv/`.
 - Handles missing values, encoding, and scaling.
+- Implements stratified imputation to maintain data distribution.
 - Saves the resulting dataset to `data/processed/`.
 
-### Model Training (`train_model.py`)
-- Loads processed data from `data/processed/final_dataset.csv`.
-- Trains an **XGBoost Classifier** using `GridSearchCV` for hyperparameter optimization.
-- One-hot encodes categorical variables automatically.
-- Evaluates performance (Accuracy, Classification Report) on a test set (20% split).
-- Saves the best model artifact to `models/xgboost_model.joblib`.
-
-### Prediction (`predict_model.py`)
-- Loads a trained model.
-- Generates predictions on new data.
-
-## Placeholders & Future Work
-- [x] Implement specific cleaning logic in `build_features.py`.
-- [x] Define the model architecture in `train_model.py`.
-- [ ] Add unit tests for data transformations.
-- [x] Integrate hyperparameter tuning.
+### Model Training
+- **XGBoost / CatBoost / EBM**: Implements manual randomized search with Stratified K-Fold CV. Prioritizes **F2 Score** via threshold tuning to ensure high recall for fetal death cases.
+- **AutoGluon**: Leverages AutoML with multi-layer stacking and bagging for high-performance ensembling.
 
 ## License
 [Insert License Information]
