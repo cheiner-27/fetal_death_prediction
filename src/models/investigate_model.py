@@ -41,7 +41,7 @@ def investigate_model(data_path="data/processed/final_dataset.csv", model_path="
     
     # Get feature names (handling one-hot encoding if necessary)
     # Ideally, we should have saved the feature names with the model, but we can reconstruct them
-    # by applying the same preprocessing as train_model.py
+    # by applying the same preprocessing as train_xgboost.py
     
     X = df.drop(columns=["OUTCOME"])
     categorical_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()

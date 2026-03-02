@@ -47,11 +47,11 @@ UNKNOWN_VALUE_MAP = {
 }
 
 # Feature Groups for Experiments
-CIGARETTE_COLUMNS = ["CIG_0", "CIG_1", "CIG_2", "CIG_0_UNKNOWN", "CIG_1_UNKNOWN", "CIG_2_UNKNOWN"]
+CIGARETTE_COLUMNS = ["CIG_0", "CIG_1", "CIG_2"]
 CIGARETTE_RECODE = ["CIG_REC"]
 
-FATHER_AGE = ["FAGECOMB", "FAGECOMB_UNKNOWN"]
-FATHER_AGE_RECODE = ["FAGEREC11", "FAGEREC11_UNKNOWN"]
+FATHER_AGE = ["FAGECOMB"]
+FATHER_AGE_RECODE = ["FAGEREC11"]
 
 MOTHER_AGE = ["MAGER"]
 MOTHER_AGE_RECODE_SMALL = ["MAGER9"]
@@ -60,11 +60,11 @@ MOTHER_AGE_RECODE_LARGE = ["MAGER14"]
 MOTHER_RACE_RECODE_SMALL = ["MRACE6"]
 MOTHER_RACE_RECODE_LARGE = ["MRACE15"]
 
-BMI_COLS = ["BMI", "BMI_UNKNOWN"]
+BMI_COLS = ["BMI"]
 BMI_RECODE = ["BMI_R"]
 
-ILLB_COLS = ["ILLB_R", "ILLB_R_UNKNOWN"]
-ILLB_RECODE = ["ILLB_R11", "ILLB_R11_UNKNOWN"]
+ILLB_COLS = ["ILLB_R"]
+ILLB_RECODE = ["ILLB_R11"]
 
 # Composite Groups
 NUMERIC_FEATURE_SET = CIGARETTE_COLUMNS + FATHER_AGE + MOTHER_AGE + BMI_COLS + ILLB_COLS
@@ -179,40 +179,182 @@ def clean_data(df, include_reporting_flags=True):
     return df
 
 
-def handle_unknowns(df):
-    logger.info("Handling unknown values...")
+def impute_data(df):
+    logger.info("Imputing missing/unknown values...")
+    
+    # 1. Map unknowns to NaN for identified columns to facilitate imputation
     for col, unknown_values in UNKNOWN_VALUE_MAP.items():
         if col in df.columns:
-            unknown_col_name = f"{col}_UNKNOWN"
-            unknown_mask = build_unknown_mask(df[col], unknown_values)
-            df[unknown_col_name] = unknown_mask.astype(bool)
-            df.loc[unknown_mask, col] = np.nan
+            mask = build_unknown_mask(df[col], unknown_values)
+            df.loc[mask, col] = np.nan
+            # Ensure numeric for calculations
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Ensure MAGER9 exists for stratification
+    if "MAGER9" not in df.columns and "MAGER" in df.columns:
+        bins = [0, 15, 20, 25, 30, 35, 40, 45, 50, 150]
+        labels = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        df["MAGER9"] = pd.cut(df["MAGER"], bins=bins, labels=labels, right=False).astype(float)
+    elif "MAGER9" in df.columns:
+        df["MAGER9"] = pd.to_numeric(df["MAGER9"], errors="coerce")
+
+    # --- Stratified Imputation Logic ---
+
+    # BMI: Median stratified by age (MAGER9)
+    if "BMI" in df.columns:
+        df["BMI"] = df.groupby("MAGER9")["BMI"].transform(lambda x: x.fillna(x.median()))
+
+    # CIG_0: Random based on distribution of age group
+    if "CIG_0" in df.columns:
+        def stochastic_impute_group(group):
+            if group.isnull().all(): return group
+            dist = group.dropna().value_counts(normalize=True)
+            if dist.empty: return group
+            nans = group.isnull()
+            if nans.any():
+                group.loc[nans] = np.random.choice(dist.index, size=nans.sum(), p=dist.values)
+            return group
+        df["CIG_0"] = df.groupby("MAGER9")["CIG_0"].transform(stochastic_impute_group)
+
+    # CIG_1, CIG_2
+    if "CIG_0" in df.columns:
+        if "CIG_1" in df.columns:
+            df.loc[df["CIG_0"] == 0, "CIG_1"] = 0
+            delta = (df["CIG_1"] - df["CIG_0"]).median()
+            if pd.isna(delta): delta = 0
+            df["CIG_1"] = df["CIG_1"].fillna((df["CIG_0"] + delta).clip(lower=0))
+        
+        if "CIG_2" in df.columns:
+            df.loc[df["CIG_0"] == 0, "CIG_2"] = 0
+            # Use median delta between CIG_1 and CIG_0 as requested
+            delta_val = (df["CIG_1"] - df["CIG_0"]).median()
+            if pd.isna(delta_val): delta_val = 0
+            df["CIG_2"] = df["CIG_2"].fillna((df["CIG_0"] + delta_val).clip(lower=0))
+
+    # DLMP_MM: Random uniform 1-12
+    if "DLMP_MM" in df.columns:
+        nans = df["DLMP_MM"].isnull()
+        if nans.any():
+            df.loc[nans, "DLMP_MM"] = np.random.randint(1, 13, size=nans.sum())
+
+    # FAGECOMB: Median delta with mother's age
+    if "FAGECOMB" in df.columns and "MAGER" in df.columns:
+        delta = (df["FAGECOMB"] - df["MAGER"]).median()
+        if pd.isna(delta): delta = 0
+        df["FAGECOMB"] = df["FAGECOMB"].fillna(df["MAGER"] + delta)
+
+    # FAGEREC11: Based on FAGECOMB (5-year increments)
+    if "FAGEREC11" in df.columns and "FAGECOMB" in df.columns:
+        def recode_fage11(age):
+            if pd.isna(age): return np.nan
+            if age < 15: return 1
+            if age < 20: return 2
+            if age < 25: return 3
+            if age < 30: return 4
+            if age < 35: return 5
+            if age < 40: return 6
+            if age < 45: return 7
+            if age < 50: return 8
+            if age < 55: return 9
+            return 10
+        nans = df["FAGEREC11"].isnull()
+        if nans.any():
+            df.loc[nans, "FAGEREC11"] = df.loc[nans, "FAGECOMB"].apply(recode_fage11)
+
+    # ILLB: 888 -> 0; 999 -> median by age
+    illb_col = "ILLB" if "ILLB" in df.columns else ("ILLB_R" if "ILLB_R" in df.columns else None)
+    if illb_col:
+        df.loc[df[illb_col] == 888, illb_col] = 0
+        df[illb_col] = df.groupby("MAGER9")[illb_col].transform(lambda x: x.fillna(x.median()))
+
+    # ILLB_R11: Recode from ILLB
+    if "ILLB_R11" in df.columns and illb_col:
+        def recode_illb11(val):
+            if pd.isna(val): return np.nan
+            if val < 4: return 0 # 000-003: Leave as is (recode to 0 for R11)
+            if 4 <= val <= 11: return 1
+            if 12 <= val <= 17: return 2
+            if 18 <= val <= 23: return 3
+            if 24 <= val <= 35: return 4
+            if 36 <= val <= 47: return 5
+            if 48 <= val <= 59: return 6
+            if 60 <= val <= 71: return 7
+            return 8 # 72mo+
+        nans = df["ILLB_R11"].isnull()
+        if nans.any():
+            df.loc[nans, "ILLB_R11"] = df.loc[nans, illb_col].apply(recode_illb11)
+
+    # MEDUC: <14: 1; 14-17: 2; missing and >17: Stochastic
+    if "MEDUC" in df.columns and "MAGER" in df.columns:
+        df.loc[df["MAGER"] < 14, "MEDUC"] = 1
+        df.loc[(df["MAGER"] >= 14) & (df["MAGER"] <= 17), "MEDUC"] = 2
+        
+        mask = df["MEDUC"].isnull() & (df["MAGER"] > 17)
+        if mask.any():
+            def stochastic_meduc(group):
+                if group.isnull().all(): return group
+                dist = group.dropna().value_counts(normalize=True)
+                if dist.empty: return group
+                nans = group.isnull()
+                if nans.any():
+                    group.loc[nans] = np.random.choice(dist.index, size=nans.sum(), p=dist.values)
+                return group
+            # Apply only to the missing ones > 17
+            imputed_meduc = df.groupby("MAGER9")["MEDUC"].transform(stochastic_meduc)
+            df.loc[mask, "MEDUC"] = imputed_meduc.loc[mask]
+
+    # M_Ht_In: Median stratified by age and BMI
+    if "M_Ht_In" in df.columns:
+        if "BMI" in df.columns:
+            bmi_bin = pd.qcut(df["BMI"], 5, labels=False, duplicates='drop')
+            df["M_Ht_In"] = df.groupby(["MAGER9", bmi_bin])["M_Ht_In"].transform(lambda x: x.fillna(x.median()))
+        else:
+            df["M_Ht_In"] = df.groupby("MAGER9")["M_Ht_In"].transform(lambda x: x.fillna(x.median()))
+
+    # PRIORDEAD: Constant 0
+    if "PRIORDEAD" in df.columns:
+        df["PRIORDEAD"] = df["PRIORDEAD"].fillna(0)
+
+    # PRIORLIVE: If ILLB is 888 (0): 0. Else median by age.
+    if "PRIORLIVE" in df.columns:
+        if illb_col:
+            df.loc[df[illb_col] == 0, "PRIORLIVE"] = 0
+        df["PRIORLIVE"] = df.groupby("MAGER9")["PRIORLIVE"].transform(lambda x: x.fillna(x.median()))
+
+    # LBO_REC: PRIORLIVE + 1
+    if "LBO_REC" in df.columns and "PRIORLIVE" in df.columns:
+         df["LBO_REC"] = df["PRIORLIVE"] + 1
+
+    # PRECARE: Mode stratified by MEDUC and MAGER9
+    if "PRECARE" in df.columns:
+        def fill_mode(x):
+            if x.isnull().all(): return x
+            m = x.mode()
+            if m.empty: return x
+            return x.fillna(m[0])
+        df["PRECARE"] = df.groupby(["MEDUC", "MAGER9"])["PRECARE"].transform(fill_mode)
+
+    # PWgt_R: Reverse engineer from BMI
+    if "PWgt_R" in df.columns:
+        if "BMI" in df.columns and "M_Ht_In" in df.columns:
+            # Formula: Weight = (BMI * Height^2) / 703
+            bmi_based_weight = (df["BMI"] * (df["M_Ht_In"]**2)) / 703
+            # Use BMI-based weight to fill missing PWgt_R
+            df["PWgt_R"] = df["PWgt_R"].fillna(bmi_based_weight)
+            
+        # If still missing: Median by age
+        df["PWgt_R"] = df.groupby("MAGER9")["PWgt_R"].transform(lambda x: x.fillna(x.median()))
+
     return df
 
 
 def engineer_features(df):
     logger.info("Engineering features...")
 
-    # First Birth
-    if "ILLB_R" in df.columns and "ILLB_R11" in df.columns:
-        illb_r_num = pd.to_numeric(df["ILLB_R"], errors="coerce")
-        illb_r11_num = pd.to_numeric(df["ILLB_R11"], errors="coerce")
-        first_birth_mask = (illb_r_num == 888) | (illb_r11_num == 88)
-        
-        df.loc[first_birth_mask, "ILLB_R"] = np.nan
-        df.loc[first_birth_mask, "ILLB_R11"] = np.nan
-        df["FIRST_BIRTH"] = first_birth_mask.astype(int)
-
-    # Zero values in ILLB
-    if "ILLB" in df.columns and "ILLB_R11" in df.columns:
-        illb_num = pd.to_numeric(df["ILLB"], errors="coerce")
-        illb_r11_num = pd.to_numeric(df["ILLB_R11"], errors="coerce")
-        
-        illb_zero_mask = (illb_num.isin([0, 1, 2, 3]))
-        illb_r11_zero_mask = (illb_r11_num == 0)
-        
-        df.loc[illb_zero_mask, "ILLB"] = np.nan
-        df.loc[illb_r11_zero_mask, "ILLB_R11"] = np.nan
+    # First Birth indicator (based on imputed ILLB)
+    illb_col = "ILLB" if "ILLB" in df.columns else ("ILLB_R" if "ILLB_R" in df.columns else None)
+    if illb_col:
+        df["FIRST_BIRTH"] = (df[illb_col] == 0).astype(int)
 
     # BMI and Weight calculations
     if "M_Ht_In" in df.columns and "PWgt_R" in df.columns:
@@ -220,7 +362,7 @@ def engineer_features(df):
         df["PWgt_kg"] = pd.to_numeric(df["PWgt_R"], errors='coerce') * 0.453592
         df["Pre_BMI"] = df["PWgt_kg"] / (df["M_ht_M"] ** 2)
 
-        df.drop(columns=["M_Ht_In", "PWgt_R"], inplace=True)
+        # We keep M_Ht_In and PWgt_R for now as they might be in select_features
     
     if "BMI" in df.columns and "Pre_BMI" in df.columns:
          df["BMI_delta"] = pd.to_numeric(df["BMI"], errors='coerce') - df["Pre_BMI"]
@@ -230,6 +372,31 @@ def engineer_features(df):
     if "BMI" in df.columns:
         bmi_numeric = pd.to_numeric(df["BMI"], errors="coerce")
         df["RF_obesity"] = np.where(bmi_numeric >= 40, "Y", "N")
+
+    # New Requested Features
+    if "LBO_REC" in df.columns and "MAGER" in df.columns:
+        # Frequency of births: LBO_REC / (MAGER - 11)
+        age_diff = df["MAGER"] - 11
+        df["BIRTH_FREQ"] = df["LBO_REC"] / age_diff.replace(0, np.nan)
+        
+        # Teenager with multiple births: MAGER < 20 & LBO_REC > 1
+        df["TEEN_MULT_BIRTH"] = ((df["MAGER"] < 20) & (df["LBO_REC"] > 1)).astype(int)
+
+    if "PRIORDEAD" in df.columns and "PRIORLIVE" in df.columns:
+        # Prior mortality rate: PRIORDEAD / (PRIORLIVE + PRIORDEAD)
+        total_prior = df["PRIORLIVE"] + df["PRIORDEAD"]
+        df["PRIOR_MORT_RATE"] = np.where(total_prior > 0, df["PRIORDEAD"] / total_prior, 0)
+        
+        # History of loss: PRIORDEAD > 0
+        df["HIST_LOSS"] = (df["PRIORDEAD"] > 0).astype(int)
+
+    if "PRECARE" in df.columns:
+        # Delayed care: PRECARE > 3
+        df["DELAYED_CARE"] = (df["PRECARE"] > 3).astype(int)
+
+    if "FAGECOMB" in df.columns and "MAGER" in df.columns:
+        # Parental age discrepancy: FAGECOMB - MAGER
+        df["AGE_DISC"] = df["FAGECOMB"] - df["MAGER"]
 
     # Risk Factor Count
     risk_factor_cols = ["RF_ARTEC", "RF_EHYPE", "RF_FEDRG", "RF_GDIAB", "RF_GHYPE", "RF_INFTR", "RF_obesity"]
@@ -323,7 +490,7 @@ def process_data(input_path, output_path, include_reporting_flags, feature_set):
         return
 
     df = clean_data(df, include_reporting_flags=include_reporting_flags)
-    df = handle_unknowns(df)
+    df = impute_data(df)
     df = engineer_features(df)
     df = set_dtypes(df)
     df = select_features(df, feature_set)
